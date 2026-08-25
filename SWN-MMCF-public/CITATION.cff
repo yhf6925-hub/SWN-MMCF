@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "Replace placeholder metadata, then cite this software and the associated manuscript."
+title: "SWN-MMCF: Public Algorithm Interface for OpenVINS"
+type: software
+authors:
+  - family-names: "REPLACE_ME"
+    given-names: "REPLACE_ME"
+version: 0.1.0
+date-released: 2026-08-25
+license: GPL-3.0-only
+repository-code: "https://github.com/REPLACE_ME/SWN-MMCF"
+keywords:
+  - visual-inertial odometry
+  - OpenVINS
+  - MSCKF
+  - sensor fusion
+preferred-citation:
+  type: article
+  title: "REPLACE_WITH_MANUSCRIPT_TITLE"
+  authors:
+    - family-names: "REPLACE_ME"
+      given-names: "REPLACE_ME"
+  journal: "REPLACE_ME"
+  year: 2026
+

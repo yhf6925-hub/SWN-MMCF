@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#pragma once
+
+#define SWN_MMCF_PUBLIC_API_VERSION_MAJOR 0
+#define SWN_MMCF_PUBLIC_API_VERSION_MINOR 1
+#define SWN_MMCF_PUBLIC_API_VERSION_PATCH 0
+
