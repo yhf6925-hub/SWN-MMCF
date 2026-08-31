@@ -1,73 +1,76 @@
-# SWN-MMCF: public algorithm interface for OpenVINS
+# SWN-MMCF
 
-This repository is the compact public artifact accompanying the SWN-MMCF manuscript. It documents the method's interfaces, data flow, configuration surface, and integration points with OpenVINS. The implementation bodies of the manuscript's protected core functions are intentionally omitted; their contracts and pseudocode are provided instead.
+Compact public training core for the SWN-MMCF Stage-6 kernel-weight network used with [OpenVINS](https://github.com/rpng/open_vins). The repository is intentionally flat: the complete public code consists of two Python files.
 
-> **Naming note:** `SWN-MMCF` is kept as the manuscript-defined method name. Replace this sentence with the full expansion used in the accepted manuscript before release.
+## Files
 
-## What is included
+- `model.py` defines the normalized encoder, training-only physics decoder, and inference-only ONNX graph.
+- `train.py` provides the NPZ dataset loader, training loop, checkpoint writer, and ONNX export.
 
-| Item | Disclosure level | Location |
-|---|---|---|
-| Input/output data structures | Full declarations | `include/swn_mmcf/types.hpp` |
-| SWN and MMCF core APIs | Signatures and contracts only | `include/swn_mmcf/core_api.hpp` |
-| OpenVINS integration boundary | Full declarations | `include/swn_mmcf/openvins_bridge.hpp` |
-| End-to-end processing flow | Pseudocode | `pseudocode/swn_mmcf_pipeline.pseudo.cpp` |
-| Algorithm stages and equations-to-code map | Logic-level description | `docs/algorithm.md` |
-| OpenVINS hook map | Integration guide | `docs/openvins_integration.md` |
-| Parameters | Example values and meanings | `config/swn_mmcf.example.yaml` |
+Datasets, calibration, learned weights, experiment logs, and the private training configuration are not distributed.
 
-This artifact does **not** contain trained weights, dataset files, private calibration, or the bodies of the three protected operators: window scoring, multi-modal constraint construction, and robust update synthesis. See `docs/disclosure_scope.md` for the exact boundary.
+## Confidential objective boundary
 
-## Repository layout
+The exact loss terms, their weights, and their epoch-dependent coordination are research parameters and are not disclosed. The public trainer calls one external function:
 
-```text
-SWN-MMCF-public/
-├── include/swn_mmcf/          # C++17 public contracts
-├── pseudocode/                # reviewer-readable pipeline
-├── config/                    # non-dataset-specific parameters
-├── docs/                      # method and integration notes
-├── tests/                     # header syntax check only
-├── third_party/               # attribution and dependency notes
-├── CMakeLists.txt
-├── CITATION.cff
-└── LICENSE
+```python
+def compose_loss(outputs, batch, epoch):
+    # Private implementation; return one scalar torch.Tensor.
+    ...
 ```
 
-## Relationship to OpenVINS
+Pass it at runtime as `--objective package.module:compose_loss`. The private module and JSON configuration should be stored outside this repository; matching `private_*.py` and `private_*.json` files are ignored by Git.
 
-SWN-MMCF is designed as an extension layer around OpenVINS. OpenVINS remains responsible for sensor ingestion, inertial propagation, camera-state cloning, feature tracking/triangulation, and the baseline MSCKF state update. SWN-MMCF consumes a read-only snapshot of the active window and returns a vetted update packet to the estimator adapter.
+## Data contract
 
-No OpenVINS source file is copied into this repository. Use the upstream project separately:
+Training data is a private NumPy `.npz` file. It must contain aligned rank-2 arrays named `feature` and `physics_target`. Additional numeric arrays are forwarded unchanged to the private objective function. This keeps the public training loop useful without exposing the loss construction or dataset-specific supervision.
+
+For the current OpenVINS adapter, the deployment graph uses input name `x`, output name `alpha`, and a dynamic batch dimension. The deployed Stage-6 contract is a 40,661-element padded feature vector and 52 normalized kernel weights. Normalization is embedded in the exported ONNX graph, so the OpenVINS runtime passes raw packed features directly.
+
+## Training
+
+Install a recent Python, NumPy, PyTorch, and ONNX environment, then run:
+
+```bash
+python train.py \
+  --data /secure/path/stage6_train.npz \
+  --config /secure/path/private_training.json \
+  --objective private_losses:compose_loss \
+  --checkpoint /secure/path/stage6_encoder.pth \
+  --onnx /secure/path/swn_stage6.onnx
+```
+
+The private JSON has `network` and `training` objects. The code validates all required keys at startup; no publishable defaults are included because default values would disclose the training setup. The trainer logs only the aggregate objective and does not print individual loss weights.
+
+## OpenVINS relationship and acknowledgment
+
+SWN-MMCF is an extension around OpenVINS, not a replacement or a fork published here. OpenVINS supplies sensor ingestion, inertial propagation, camera-state cloning, feature tracking, MSCKF residual/Jacobian construction, and the estimator state. This network predicts the normalized MMCF kernel-mixture coefficients consumed at the robust update boundary. No OpenVINS source code is copied into this repository.
+
+Please obtain OpenVINS from its official repository and retain its GPL-3.0 notices:
 
 ```bash
 git clone --branch v2.7 https://github.com/rpng/open_vins.git
 ```
 
-The tested OpenVINS commit, ROS distribution, compiler, dataset split, and calibration file hashes must be filled in under `docs/reproducibility.md` before the public release.
+If you use this code, please cite OpenVINS:
 
-## Validate the public headers
-
-The artifact is an interface release, not an executable estimator. The following command verifies that the public C++ declarations are self-consistent:
-
-```bash
-cmake -S . -B build
-cmake --build build
-./build/swn_mmcf_header_check
+```bibtex
+@inproceedings{Geneva2020ICRA,
+  title     = {{OpenVINS}: A Research Platform for Visual-Inertial Estimation},
+  author    = {Patrick Geneva and Kevin Eckenhoff and Woosik Lee and Yulin Yang and Guoquan Huang},
+  booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation},
+  year      = {2020},
+  address   = {Paris, France},
+  url       = {https://github.com/rpng/open_vins}
+}
 ```
 
-A successful run prints `SWN-MMCF public API: OK`. It does not execute the protected algorithm.
+Also cite the SWN-MMCF paper after its final bibliographic information is available.
 
-## How to read the method
+## Demo video
 
-1. Start with `docs/algorithm.md` for the stage-by-stage logic.
-2. Read `pseudocode/swn_mmcf_pipeline.pseudo.cpp` for control flow.
-3. Inspect `include/swn_mmcf/core_api.hpp` for exact input/output contracts.
-4. Use `docs/openvins_integration.md` to locate the OpenVINS-side hooks.
-
-## Citation
-
-Please cite both the SWN-MMCF manuscript and OpenVINS. Replace the placeholder author and publication fields in `CITATION.cff` before publishing this repository.
+The local screen recording is about 125 MB, above GitHub's normal 100 MB per-file limit, so it is deliberately not committed to the source history. Publish a compressed copy as a GitHub Release asset and link it here when ready.
 
 ## License
 
-This interface artifact is released under GPL-3.0-only to remain compatible with the OpenVINS integration context. OpenVINS is a separate upstream project and retains its original copyright notices. See `LICENSE` and `third_party/NOTICE.md`.
+This repository is released under GPL-3.0-only. OpenVINS is a separate upstream project and retains its original copyrights and license notices. See `LICENSE`.

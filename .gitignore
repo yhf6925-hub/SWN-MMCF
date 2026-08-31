@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.npz
+*.onnx
+*.pt
+*.pth
+*.mp4
+checkpoints/
+private_*.json
+private_*.py
