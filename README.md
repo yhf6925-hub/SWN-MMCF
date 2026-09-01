@@ -1,13 +1,12 @@
 # SWN-MMCF
 
-Compact public training core for the SWN-MMCF Stage-6 kernel-weight network used with [OpenVINS](https://github.com/rpng/open_vins). The repository is intentionally flat: the complete public code consists of two Python files.
+Compact public training core for the SWN-MMCF kernel-weight network used with [OpenVINS](https://github.com/rpng/open_vins). The repository is intentionally flat: the complete public code consists of two Python files.
 
 ## Files
 
 - `model.py` defines the normalized encoder, training-only physics decoder, and inference-only ONNX graph.
 - `train.py` provides the NPZ dataset loader, training loop, checkpoint writer, and ONNX export.
 
-Datasets, calibration, learned weights, experiment logs, and the private training configuration are not distributed.
 
 ## Confidential objective boundary
 
