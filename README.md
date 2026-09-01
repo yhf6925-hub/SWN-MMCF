@@ -52,18 +52,6 @@ Please obtain OpenVINS from its official repository and retain its GPL-3.0 notic
 git clone --branch v2.7 https://github.com/rpng/open_vins.git
 ```
 
-If you use this code, please cite OpenVINS:
-
-```bibtex
-@inproceedings{Geneva2020ICRA,
-  title     = {{OpenVINS}: A Research Platform for Visual-Inertial Estimation},
-  author    = {Patrick Geneva and Kevin Eckenhoff and Woosik Lee and Yulin Yang and Guoquan Huang},
-  booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation},
-  year      = {2020},
-  address   = {Paris, France},
-  url       = {https://github.com/rpng/open_vins}
-}
-```
 
 Also cite the SWN-MMCF paper after its final bibliographic information is available.
 
