@@ -94,7 +94,7 @@ IMU + stereo images
 OpenVINS propagation, tracking and MSCKF measurement construction
         |
         v
-Stage-6 feature packing -> ONNX weight network -> robust weights alpha
+SWN-MMCF feature -> ONNX weight network -> robust weights alpha
         |                                      |
         +---------- SWN-MMCF fixed point <-----+
                            |
