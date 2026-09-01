@@ -28,7 +28,7 @@ The training entry point is `train.py`, while `model.py` contains feature normal
 
 ### SWN-MMCF inference
 
-The inference environment follows the standard [OpenVINS](https://github.com/rpng/open_vins) environment. Install and build OpenVINS using its official [installation guide](https://docs.openvins.com/gs-installing.html), then add ONNX Runtime C/C++ and the exported `swn_stage6.onnx` model to the `ov_msckf` package. The implementation supports the same ROS 1, ROS 2, and ROS-free configurations provided by OpenVINS.
+The inference environment follows the standard [OpenVINS](https://github.com/rpng/open_vins) environment. Install and build OpenVINS using its official [installation guide](https://docs.openvins.com/gs-installing.html), then add ONNX Runtime C/C++ and the exported `swn_mmcf.onnx` model to the `ov_msckf` package. The implementation supports the same ROS 1, ROS 2, and ROS-free configurations provided by OpenVINS.
 
 The current ROS 2 workspace can be built with:
 
