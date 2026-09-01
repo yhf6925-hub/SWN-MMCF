@@ -14,7 +14,6 @@ The network training environment used in this project is:
 
 | Component | Version / configuration |
 |---|---|
-| Environment location | `D:\Anaconda3\envs\item_1` |
 | Python | 3.12.12 |
 | pip | 25.3 |
 | PyTorch | 2.9.1+cu130 |
