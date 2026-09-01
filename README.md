@@ -1,63 +1,99 @@
 # SWN-MMCF
 
-Compact public training core for the SWN-MMCF kernel-weight network used with [OpenVINS](https://github.com/rpng/open_vins). The repository is intentionally flat: the complete public code consists of two Python files.
+SWN-MMCF integrates a self-supervised weight network and multi-kernel maximum correntropy filtering with OpenVINS for robust visual-inertial state estimation.
 
-## Files
+[SWN-MMCF inference demo](swn-mmcf-demo.mp4)
 
-- `model.py` defines the normalized encoder, training-only physics decoder, and inference-only ONNX graph.
-- `train.py` provides the NPZ dataset loader, training loop, checkpoint writer, and ONNX export.
+## Environment
 
+### Network training
 
-## Confidential objective boundary
-
-The exact loss terms, their weights, and their epoch-dependent coordination are research parameters and are not disclosed. The public trainer calls one external function:
-
-```python
-def compose_loss(outputs, batch, epoch):
-    # Private implementation; return one scalar torch.Tensor.
-    ...
-```
-
-Pass it at runtime as `--objective package.module:compose_loss`. The private module and JSON configuration should be stored outside this repository; matching `private_*.py` and `private_*.json` files are ignored by Git.
-
-## Data contract
-
-Training data is a private NumPy `.npz` file. It must contain aligned rank-2 arrays named `feature` and `physics_target`. Additional numeric arrays are forwarded unchanged to the private objective function. This keeps the public training loop useful without exposing the loss construction or dataset-specific supervision.
-
-For the current OpenVINS adapter, the deployment graph uses input name `x`, output name `alpha`, and a dynamic batch dimension. The deployed Stage-6 contract is a 40,661-element padded feature vector and 52 normalized kernel weights. Normalization is embedded in the exported ONNX graph, so the OpenVINS runtime passes raw packed features directly.
-
-## Training
-
-Install a recent Python, NumPy, PyTorch, and ONNX environment, then run:
+The training code uses Python, NumPy, PyTorch, ONNX, ONNX Script, and ONNX Runtime. A virtual environment can be prepared with:
 
 ```bash
-python train.py \
-  --data /secure/path/stage6_train.npz \
-  --config /secure/path/private_training.json \
-  --objective private_losses:compose_loss \
-  --checkpoint /secure/path/stage6_encoder.pth \
-  --onnx /secure/path/swn_stage6.onnx
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install numpy torch onnx onnxscript onnxruntime
 ```
 
-The private JSON has `network` and `training` objects. The code validates all required keys at startup; no publishable defaults are included because default values would disclose the training setup. The trainer logs only the aggregate objective and does not print individual loss weights.
+For GPU training, install the PyTorch build that matches the CUDA version on the training machine. The training entry point is `train.py`; `model.py` contains the encoder, decoder, feature normalization, and ONNX deployment graph.
 
-## OpenVINS relationship and acknowledgment
+### SWN-MMCF inference
 
-SWN-MMCF is an extension around OpenVINS, not a replacement or a fork published here. OpenVINS supplies sensor ingestion, inertial propagation, camera-state cloning, feature tracking, MSCKF residual/Jacobian construction, and the estimator state. This network predicts the normalized MMCF kernel-mixture coefficients consumed at the robust update boundary. No OpenVINS source code is copied into this repository.
+The inference environment follows the standard [OpenVINS](https://github.com/rpng/open_vins) environment. Install and build OpenVINS using its official [installation guide](https://docs.openvins.com/gs-installing.html), then add ONNX Runtime C/C++ and the exported `swn_stage6.onnx` model to the `ov_msckf` package. The implementation supports the same ROS 1, ROS 2, and ROS-free configurations provided by OpenVINS.
 
-Please obtain OpenVINS from its official repository and retain its GPL-3.0 notices:
+The current ROS 2 workspace can be built with:
 
 ```bash
-git clone --branch v2.7 https://github.com/rpng/open_vins.git
+source /opt/ros/$ROS_DISTRO/setup.bash
+colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
 ```
 
+Enable SWN-MMCF in the OpenVINS estimator configuration:
 
-Also cite the SWN-MMCF paper after its final bibliographic information is available.
+```yaml
+use_swn_mmcf: true
+swn_mmcf_model_path: /absolute/path/to/swn_stage6.onnx
+```
 
-## Demo video
+OpenVINS citation:
 
-The local screen recording is about 125 MB, above GitHub's normal 100 MB per-file limit, so it is deliberately not committed to the source history. Publish a compressed copy as a GitHub Release asset and link it here when ready.
+```bibtex
+@inproceedings{Geneva2020ICRA,
+  title     = {{OpenVINS}: A Research Platform for Visual-Inertial Estimation},
+  author    = {Patrick Geneva and Kevin Eckenhoff and Woosik Lee and Yulin Yang and Guoquan Huang},
+  booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation},
+  year      = {2020},
+  address   = {Paris, France},
+  url       = {https://github.com/rpng/open_vins}
+}
+```
 
-## License
+## Data input
 
-This repository is released under GPL-3.0-only. OpenVINS is a separate upstream project and retains its original copyrights and license notices. See `LICENSE`.
+Training samples are collected at visual measurement-update times. Raw stereo images and IMU measurements are first processed by the visual-inertial front end and the physical-information feature extractor. Each sample contains the multi-kernel scale vector, prior error state, visual innovation, measurement Jacobian, measurement-noise diagonal, prior covariance, valid measurement/state masks, and the physical target formed from the innovation and its Mahalanobis statistic.
+
+Variable-size MSCKF systems are padded to a fixed measurement/state size before feature concatenation. In the current OpenVINS integration, the packed network input has 40,661 elements and the encoder outputs 52 normalized robust kernel weights. The training `.npz` file uses:
+
+- `feature`: packed physical-information features with shape `[N, D]`;
+- `physics_target`: physical reconstruction target with shape `[N, P]`;
+- additional aligned numeric arrays used during self-supervised training.
+
+![Learning of the self-supervised weight network in SWN-MMCF](figure2.png)
+
+[Figure 2 in PDF format](figure2.pdf)
+
+## Inference with OpenVINS
+
+SWN-MMCF is inserted into the MSCKF visual-update stage of OpenVINS. OpenVINS continues to perform sensor synchronization, IMU propagation, initialization, feature tracking, camera-state cloning, measurement construction, marginalization, and state publication. When `use_swn_mmcf` is enabled, the standard MSCKF EKF update is replaced by the SWN-MMCF robust update.
+
+The inference sequence is:
+
+1. **Sensor processing:** OpenVINS receives IMU and camera measurements, propagates the IMU state and covariance, tracks stereo features, and augments the sliding-window camera clones.
+2. **MSCKF measurement construction:** valid feature tracks are triangulated and projected into the left null space. OpenVINS forms the compressed residual vector `r`, Jacobian `H`, measurement covariance `R`, and the active prior covariance `P`.
+3. **Canonical state mapping:** the active OpenVINS error state is mapped to the Stage-6 order consisting of IMU attitude, biases, velocity, position, camera-0 extrinsics, and active pose clones. Measurement and state dimensions are padded and accompanied by validity masks.
+4. **Network input packing:** the kernel scales, zero error-state prior, padded residual, row-major Jacobian, measurement-noise diagonal, prior covariance, validity masks, innovation, and Mahalanobis statistic are concatenated into the fixed-length physical feature vector.
+5. **Weight-network inference:** the ONNX encoder receives input tensor `x` and returns `alpha`, a normalized vector of robust multi-kernel weights.
+6. **MMCF fixed-point update:** the predicted weights are used by the multi-kernel correntropy fixed-point iteration to evaluate the prior and measurement robust factors. Iteration continues until the state correction converges or the iteration limit is reached.
+7. **Full OpenVINS state update:** the robust factors scale the prior and measurement contributions. The Kalman gain is then computed with the complete OpenVINS Jacobian so that IMU, clone, camera, stereo, intrinsic, and time-offset states remain correctly coupled. The state mean and covariance are updated in the full OpenVINS state space.
+8. **Normal OpenVINS continuation:** OpenVINS performs its normal clone/feature marginalization, publishes the estimated pose and diagnostic topics, and processes the next sensor measurements.
+
+```text
+IMU + stereo images
+        |
+        v
+OpenVINS propagation, tracking and MSCKF measurement construction
+        |
+        v
+Stage-6 feature packing -> ONNX weight network -> robust weights alpha
+        |                                      |
+        +---------- SWN-MMCF fixed point <-----+
+                           |
+                           v
+             Full-state OpenVINS update
+                           |
+                           v
+          Marginalization and pose publication
+```

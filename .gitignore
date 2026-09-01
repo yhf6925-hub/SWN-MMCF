@@ -5,6 +5,7 @@ __pycache__/
 *.pt
 *.pth
 *.mp4
+!swn-mmcf-demo.mp4
 checkpoints/
 private_*.json
 private_*.py
