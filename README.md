@@ -10,20 +10,19 @@ SWN-MMCF integrates a self-supervised weight network and multi-kernel maximum co
 
 Network training is an offline Python workflow and does not require ROS, OpenCV, Eigen, Ceres, or an OpenVINS build. The current code reads preprocessed `.npz` samples, trains the encoder/decoder with PyTorch, saves a `.pth` checkpoint, and optionally exports the inference encoder to ONNX.
 
-Recommended platform:
+The network training environment used in this project is:
 
-| Component | Requirement | Used for |
-|---|---|---|
-| Operating system | Ubuntu 20.04/22.04/24.04 x86-64 | Recommended training platform |
-| Python | 3.10-3.12 (64-bit) | Type syntax, data loading, training entry point |
-| NumPy | 1.24 or newer | Loading `.npz` arrays and converting samples to `float32` |
-| PyTorch | 2.x | Network layers, automatic differentiation, `DataLoader`, AdamW, CUDA execution, checkpoint saving |
-| ONNX | Current stable release | Serializing the trained deployment graph |
-| ONNX Script | Current stable release | Dependency of the current PyTorch ONNX exporter |
-| ONNX Runtime | Current stable CPU release | Checking the exported model and its `x -> alpha` interface |
-| NVIDIA GPU | Optional; 8 GB or more VRAM recommended | Accelerating the dense network and batched matrix operations |
+| Component | Version / configuration |
+|---|---|
+| Environment location | `D:\Anaconda3\envs\item_1` |
+| Python | 3.12.12 |
+| pip | 25.3 |
+| PyTorch | 2.9.1+cu130 |
+| Torchvision | 0.24.1+cu130 |
+| PyTorch CUDA Runtime | 13.0 |
+| cuDNN | 9.12 |
 
-The code automatically selects CUDA when `torch.cuda.is_available()` is true and otherwise runs on CPU. For CUDA training, install a recent NVIDIA driver and select the PyTorch wheel matching the machine from the official [PyTorch installation selector](https://pytorch.org/get-started/locally/). A separately installed CUDA Toolkit is only needed when building PyTorch or custom CUDA extensions from source.
+The code automatically selects CUDA when `torch.cuda.is_available()` is true and otherwise runs on CPU.
 
 
 The training entry point is `train.py`, while `model.py` contains feature normalization, the encoder, the training-only decoder, and the ONNX deployment graph.
