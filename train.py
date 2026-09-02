@@ -53,9 +53,6 @@ class MmcfSpec:
     q: float
     sigma_floor: float
     contraction_target: float
-    iteration_limit: int
-    tolerance: float
-    minimum_factor: float
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "MmcfSpec":
@@ -63,18 +60,13 @@ class MmcfSpec:
             q=float(value["q"]),
             sigma_floor=float(value["sigma_floor"]),
             contraction_target=float(value["contraction_target"]),
-            iteration_limit=int(value["iteration_limit"]),
-            tolerance=float(value["tolerance"]),
-            minimum_factor=float(value["minimum_factor"]),
         )
         if not 1.0 / 3.0 < spec.q < 1.0:
             raise ValueError("q must satisfy 1/3 < q < 1")
-        if spec.sigma_floor <= 0.0 or spec.minimum_factor <= 0.0:
-            raise ValueError("MMCF lower bounds must be positive")
+        if spec.sigma_floor <= 0.0:
+            raise ValueError("sigma_floor must be positive")
         if not 0.0 < spec.contraction_target < 1.0:
             raise ValueError("contraction_target must be in (0, 1)")
-        if spec.iteration_limit <= 0 or spec.tolerance <= 0.0:
-            raise ValueError("MMCF stopping configuration must be positive")
         return spec
 
 
@@ -229,6 +221,7 @@ class StageDataset(Dataset[dict[str, Tensor]]):
         "feature",
         "physics_target",
         "maha",
+        "beta_k",
         "P_inv",
         "HtRinvH",
         "H",
@@ -271,6 +264,11 @@ class StageDataset(Dataset[dict[str, Tensor]]):
             raise ValueError("state information matrices have invalid dimensions")
         if arrays["mask_sta"].shape != x_prior.shape:
             raise ValueError("mask_sta must match x_prior")
+        beta_k = arrays["beta_k"]
+        if beta_k.ndim not in (1, 2) or beta_k.reshape(count, -1).shape[1] != 1:
+            raise ValueError("beta_k must contain one convergence radius per sample")
+        if torch.any(beta_k < 0.0):
+            raise ValueError("beta_k must be non-negative")
         if count < 2 or any(not torch.isfinite(value).all() for value in arrays.values()):
             raise ValueError("dataset must contain finite aligned samples")
         self.arrays = arrays
@@ -300,88 +298,13 @@ def _maha_vector(maha: Tensor, batch_size: int) -> Tensor:
     return value.clamp_min(torch.finfo(value.dtype).eps)
 
 
-@torch.no_grad()
-def solve_mmcf_fixed_point(
-    alpha: Tensor,
-    kernel_scales: Tensor,
-    batch: Mapping[str, Tensor],
-    spec: MmcfSpec,
-) -> Tensor:
-    """Compute the current MMCF posterior used by the convergence objective."""
-
-    batch_size, kernel_count = alpha.shape
-    sigma = kernel_scales.reshape(1, kernel_count).expand(batch_size, kernel_count)
-    sigma = sigma.clamp_min(spec.sigma_floor)
-    inv_sigma2 = sigma.reciprocal().square()
-    kernel_c = (1.0 - spec.q) / (3.0 * spec.q - 1.0)
-    kernel_exponent = (2.0 - spec.q) / (1.0 - spec.q)
-
-    P_inv = batch["P_inv"]
-    HtRinvH = batch["HtRinvH"]
-    H = batch["H"]
-    z = batch["z"]
-    R_diag = batch["R_diag"]
-    x_prior = batch["x_prior"]
-    mask_mea = batch["mask_mea"].to(dtype=alpha.dtype)
-    mask_sta = batch["mask_sta"].to(dtype=alpha.dtype)
-    eps = torch.finfo(alpha.dtype).eps
-    R_inv = mask_mea / R_diag.clamp_min(eps)
-    P_inv_x_prior = torch.bmm(P_inv, x_prior.unsqueeze(-1)).squeeze(-1)
-    HtRinvz = torch.bmm(H.transpose(1, 2), (R_inv * z).unsqueeze(-1)).squeeze(-1)
-
-    posterior = x_prior * mask_sta
-    for _ in range(spec.iteration_limit):
-        prior_residual = (x_prior - posterior) * mask_sta
-        prior_information = torch.bmm(P_inv, prior_residual.unsqueeze(-1)).squeeze(-1)
-        measurement_residual = (z - torch.bmm(H, posterior.unsqueeze(-1)).squeeze(-1)) * mask_mea
-        prior_distance = (prior_residual * prior_information).sum(dim=1).clamp_min(0.0)
-        measurement_distance = (measurement_residual.square() * R_inv).sum(dim=1).clamp_min(0.0)
-
-        prior_kernel = torch.pow(
-            1.0 + kernel_c * prior_distance.unsqueeze(1) * inv_sigma2,
-            -kernel_exponent,
-        )
-        measurement_kernel = torch.pow(
-            1.0 + kernel_c * measurement_distance.unsqueeze(1) * inv_sigma2,
-            -kernel_exponent,
-        )
-        prior_factor = (alpha * prior_kernel).sum(dim=1).clamp_min(spec.minimum_factor)
-        measurement_factor = (alpha * measurement_kernel).sum(dim=1).clamp_min(spec.minimum_factor)
-
-        information = (
-            prior_factor[:, None, None] * P_inv
-            + measurement_factor[:, None, None] * HtRinvH
-        )
-        information = 0.5 * (information + information.transpose(1, 2))
-        active_count = mask_sta.sum(dim=1).clamp_min(1.0)
-        diagonal_mean = (
-            torch.abs(torch.diagonal(information, dim1=1, dim2=2)) * mask_sta
-        ).sum(dim=1) / active_count
-        jitter = diagonal_mean.clamp_min(1.0) * eps
-        information = information + torch.diag_embed(
-            (1.0 - mask_sta) + mask_sta * jitter.unsqueeze(1)
-        )
-        right_hand_side = (
-            prior_factor.unsqueeze(1) * P_inv_x_prior
-            + measurement_factor.unsqueeze(1) * HtRinvz
-        )
-        candidate = torch.linalg.solve(information, right_hand_side.unsqueeze(-1)).squeeze(-1)
-        candidate = candidate * mask_sta
-        step = torch.linalg.vector_norm(candidate - posterior, dim=1)
-        posterior = candidate
-        if bool(torch.all(step <= spec.tolerance).item()):
-            break
-    return posterior
-
-
 def compute_log_cbar(
     alpha: Tensor,
     kernel_scales: Tensor,
     batch: Mapping[str, Tensor],
-    posterior: Tensor,
     spec: MmcfSpec,
 ) -> Tensor:
-    """Compute the differentiable local contraction quantity for each sample."""
+    """Compute the beta-bounded uniform contraction quantity for each sample."""
 
     batch_size, kernel_count = alpha.shape
     sigma = kernel_scales.reshape(1, kernel_count).expand(batch_size, kernel_count)
@@ -391,49 +314,70 @@ def compute_log_cbar(
     log_alpha = torch.log(alpha.clamp_min(eps))
     mask_mea = batch["mask_mea"].to(dtype=alpha.dtype)
     mask_sta = batch["mask_sta"].to(dtype=alpha.dtype)
-    prior_residual = (batch["x_prior"] - posterior) * mask_sta
-    prior_information = torch.bmm(batch["P_inv"], prior_residual.unsqueeze(-1)).squeeze(-1)
-    measurement_residual = (
-        batch["z"] - torch.bmm(batch["H"], posterior.unsqueeze(-1)).squeeze(-1)
-    ) * mask_mea
+    state_mask = mask_sta.unsqueeze(1) * mask_sta.unsqueeze(2)
+    P_inv = 0.5 * (batch["P_inv"] + batch["P_inv"].transpose(1, 2))
+    P_inv = P_inv * state_mask
+    HtRinvH = 0.5 * (batch["HtRinvH"] + batch["HtRinvH"].transpose(1, 2))
+    HtRinvH = HtRinvH * state_mask
+    H = batch["H"] * mask_mea.unsqueeze(2) * mask_sta.unsqueeze(1)
     R_inv = mask_mea / batch["R_diag"].clamp_min(eps)
-    measurement_gradient = torch.bmm(
-        batch["H"].transpose(1, 2),
-        (R_inv * measurement_residual).unsqueeze(-1),
-    ).squeeze(-1)
+    sqrt_R_inv = torch.sqrt(R_inv)
+    beta_k = batch["beta_k"].reshape(batch_size, -1)[:, 0].clamp_min(0.0)
 
-    prior_distance = (prior_residual * prior_information).sum(dim=1).clamp_min(eps)
-    measurement_distance = (measurement_residual.square() * R_inv).sum(dim=1).clamp_min(eps)
-    prior_gradient = prior_information.square().sum(dim=1).clamp_min(eps)
-    measurement_gradient_norm = measurement_gradient.square().sum(dim=1).clamp_min(eps)
+    rho_k = (
+        batch["z"] - torch.bmm(H, batch["x_prior"].unsqueeze(-1)).squeeze(-1)
+    ) * mask_mea
+    weighted_rho = sqrt_R_inv * rho_k
+    weighted_H = sqrt_R_inv.unsqueeze(2) * H
+
+    prior_spectrum = torch.linalg.eigvalsh(P_inv)
+    prior_norm = prior_spectrum[:, -1].clamp_min(eps)
+    weighted_H_norm = torch.linalg.matrix_norm(weighted_H, ord=2)
+    prior_distance_bound = (prior_norm * beta_k.square()).clamp_min(eps)
+    measurement_distance_bound = (
+        torch.linalg.vector_norm(weighted_rho, dim=1)
+        + beta_k * weighted_H_norm
+    ).square().clamp_min(eps)
+
+    measurement_gradient_at_prior = torch.bmm(
+        H.transpose(1, 2),
+        (R_inv * rho_k).unsqueeze(-1),
+    ).squeeze(-1)
+    measurement_information_norm = torch.linalg.matrix_norm(HtRinvH, ord=2)
+    prior_gradient_bound = beta_k * prior_norm
+    measurement_gradient_bound = (
+        torch.linalg.vector_norm(measurement_gradient_at_prior, dim=1)
+        + beta_k * measurement_information_norm
+    )
+    geometry_bound = (
+        prior_gradient_bound.square() + measurement_gradient_bound.square()
+    ).clamp_min(eps)
 
     kernel_c = (1.0 - spec.q) / (3.0 * spec.q - 1.0)
     kernel_exponent = (2.0 - spec.q) / (1.0 - spec.q)
-    gradient_exponent = (3.0 - 2.0 * spec.q) / (2.0 - spec.q)
     contraction_constant = 2.0 * (2.0 - spec.q) / (3.0 * spec.q - 1.0)
     log_kernel_c = math.log(kernel_c)
     log_prior_kernel = -kernel_exponent * F.softplus(
-        log_kernel_c + torch.log(prior_distance).unsqueeze(1) - 2.0 * log_sigma
+        log_kernel_c
+        + torch.log(prior_distance_bound).unsqueeze(1)
+        - 2.0 * log_sigma
     )
     log_measurement_kernel = -kernel_exponent * F.softplus(
-        log_kernel_c + torch.log(measurement_distance).unsqueeze(1) - 2.0 * log_sigma
+        log_kernel_c
+        + torch.log(measurement_distance_bound).unsqueeze(1)
+        - 2.0 * log_sigma
     )
 
-    log_prior_factor = torch.logsumexp(log_alpha + log_prior_kernel, dim=1)
-    log_measurement_factor = torch.logsumexp(log_alpha + log_measurement_kernel, dim=1)
-    log_prior_gradient = torch.logsumexp(
-        log_alpha - 2.0 * log_sigma + gradient_exponent * log_prior_kernel,
-        dim=1,
-    )
-    log_measurement_gradient = torch.logsumexp(
-        log_alpha - 2.0 * log_sigma + gradient_exponent * log_measurement_kernel,
-        dim=1,
-    )
+    # With a_i proportional to alpha_i*sigma_i^2, the common normalization
+    # cancels between S_k,sigma and the lower-bounded information matrix.
+    log_lower_lambda = torch.logsumexp(log_alpha + log_prior_kernel, dim=1)
+    log_lower_delta = torch.logsumexp(log_alpha + log_measurement_kernel, dim=1)
+    log_bandwidth_sum = torch.logsumexp(log_alpha - 2.0 * log_sigma, dim=1)
 
-    log_scale = torch.maximum(log_prior_factor, log_measurement_factor)
+    log_scale = torch.maximum(log_lower_lambda, log_lower_delta)
     relative_information = (
-        torch.exp(log_prior_factor - log_scale)[:, None, None] * batch["P_inv"]
-        + torch.exp(log_measurement_factor - log_scale)[:, None, None] * batch["HtRinvH"]
+        torch.exp(log_lower_lambda - log_scale)[:, None, None] * P_inv
+        + torch.exp(log_lower_delta - log_scale)[:, None, None] * HtRinvH
     )
     relative_information = 0.5 * (
         relative_information + relative_information.transpose(1, 2)
@@ -444,13 +388,10 @@ def compute_log_cbar(
     )
     minimum_eigenvalue = torch.linalg.eigvalsh(relative_information)[:, 0].clamp_min(eps)
     log_denominator = log_scale + torch.log(minimum_eigenvalue)
-    log_geometry = torch.logaddexp(
-        log_prior_gradient + torch.log(prior_gradient),
-        log_measurement_gradient + torch.log(measurement_gradient_norm),
-    )
     return (
         math.log(contraction_constant)
-        + log_geometry
+        + log_bandwidth_sum
+        + torch.log(geometry_bound)
         - log_denominator
         - math.log(spec.contraction_target)
     )
@@ -488,8 +429,7 @@ def training_objective(
     """Evaluate the three self-supervised objectives for one batch."""
 
     alpha = outputs["alpha"]
-    posterior = solve_mmcf_fixed_point(alpha.detach(), kernel_scales, batch, mmcf)
-    log_cbar = compute_log_cbar(alpha, kernel_scales, batch, posterior, mmcf)
+    log_cbar = compute_log_cbar(alpha, kernel_scales, batch, mmcf)
     return LossTerms(
         reconstruction=reconstruction_loss(outputs["reconstruction"], batch["physics_target"]),
         dynamic=dynamic_loss(alpha, kernel_scales, batch["maha"]),
