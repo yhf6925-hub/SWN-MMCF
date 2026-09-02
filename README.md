@@ -24,8 +24,6 @@ The network training environment used in this project is:
 The code automatically selects CUDA when `torch.cuda.is_available()` is true and otherwise runs on CPU.
 
 
-The training entry point is `train.py`, while `model.py` contains feature normalization, the encoder, the training-only decoder, and the ONNX deployment graph.
-
 ### SWN-MMCF inference
 
 The inference environment follows the standard [OpenVINS](https://github.com/rpng/open_vins) environment. Install and build OpenVINS using its official [installation guide](https://docs.openvins.com/gs-installing.html), then add ONNX Runtime C/C++ and the exported `swn_mmcf.onnx` model to the `ov_msckf` package. The implementation supports the same ROS 1, ROS 2, and ROS-free configurations provided by OpenVINS.
