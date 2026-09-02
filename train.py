@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 import random
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,36 +16,6 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset
-
-
-@dataclass(frozen=True)
-class NetworkSpec:
-    hidden_dims: tuple[int, ...]
-    decoder_dims: tuple[int, ...]
-    dropout_after: tuple[bool, ...]
-    dropout: float
-    negative_slope: float
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "NetworkSpec":
-        spec = cls(
-            hidden_dims=tuple(int(v) for v in value["hidden_dims"]),
-            decoder_dims=tuple(int(v) for v in value["decoder_dims"]),
-            dropout_after=tuple(bool(v) for v in value["dropout_after"]),
-            dropout=float(value["dropout"]),
-            negative_slope=float(value["negative_slope"]),
-        )
-        if not spec.hidden_dims or any(width <= 0 for width in spec.hidden_dims):
-            raise ValueError("hidden_dims must contain positive values")
-        if any(width <= 0 for width in spec.decoder_dims):
-            raise ValueError("decoder_dims must contain positive values")
-        if len(spec.dropout_after) != len(spec.hidden_dims):
-            raise ValueError("dropout_after must match hidden_dims")
-        if not 0.0 <= spec.dropout < 1.0:
-            raise ValueError("dropout must be in [0, 1)")
-        if spec.negative_slope <= 0.0:
-            raise ValueError("negative_slope must be positive")
-        return spec
 
 
 @dataclass(frozen=True)
@@ -115,48 +85,29 @@ class RobustNormalizer(nn.Module):
         return (feature - self.median) / self.scale
 
 
-def dense_stack(
-    input_dim: int,
-    widths: Sequence[int],
-    *,
-    batch_norm: bool,
-    dropout: float,
-    negative_slope: float,
-    dropout_after: Sequence[bool] | None = None,
-) -> tuple[nn.Sequential, int]:
-    layers: list[nn.Module] = []
-    previous = input_dim
-    dropout_mask = tuple(dropout_after or (False,) * len(widths))
-    if len(dropout_mask) != len(widths):
-        raise ValueError("dropout mask must match layer widths")
-    for width, use_dropout in zip(widths, dropout_mask, strict=True):
-        layers.append(nn.Linear(previous, width))
-        if batch_norm:
-            layers.append(nn.BatchNorm1d(width))
-        layers.append(nn.LeakyReLU(negative_slope=negative_slope))
-        if use_dropout and dropout > 0.0:
-            layers.append(nn.Dropout(p=dropout))
-        previous = width
-    return nn.Sequential(*layers), previous
-
-
 class WeightEncoder(nn.Module):
     """Maps physical-information features to normalized MMCF weights."""
 
-    def __init__(self, input_dim: int, kernel_count: int, spec: NetworkSpec) -> None:
+    def __init__(self, input_dim: int, kernel_count: int) -> None:
         super().__init__()
-        self.backbone, output_dim = dense_stack(
-            input_dim,
-            spec.hidden_dims,
-            batch_norm=True,
-            dropout=spec.dropout,
-            negative_slope=spec.negative_slope,
-            dropout_after=spec.dropout_after,
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 1024),
+            nn.BatchNorm1d(1024),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.1),
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(0.1),
+            nn.Dropout(0.1),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(0.1),
+            nn.Linear(256, kernel_count),
+            nn.Sigmoid(),
         )
-        self.output = nn.Sequential(nn.Linear(output_dim, kernel_count), nn.Sigmoid())
 
     def forward(self, feature: Tensor) -> Tensor:
-        alpha = self.output(self.backbone(feature))
+        alpha = self.net(feature)
         denominator = alpha.sum(dim=1, keepdim=True).clamp_min(
             torch.finfo(alpha.dtype).tiny
         )
@@ -166,19 +117,18 @@ class WeightEncoder(nn.Module):
 class PhysicsDecoder(nn.Module):
     """Training branch that reconstructs the physical target."""
 
-    def __init__(self, kernel_count: int, target_dim: int, spec: NetworkSpec) -> None:
+    def __init__(self, kernel_count: int, target_dim: int) -> None:
         super().__init__()
-        self.backbone, output_dim = dense_stack(
-            kernel_count,
-            spec.decoder_dims,
-            batch_norm=False,
-            dropout=0.0,
-            negative_slope=spec.negative_slope,
+        self.net = nn.Sequential(
+            nn.Linear(kernel_count, 64),
+            nn.LeakyReLU(0.1),
+            nn.Linear(64, 32),
+            nn.LeakyReLU(0.1),
+            nn.Linear(32, target_dim),
         )
-        self.output = nn.Linear(output_dim, target_dim)
 
     def forward(self, alpha: Tensor) -> Tensor:
-        return self.output(self.backbone(alpha))
+        return self.net(alpha)
 
 
 class SWNMMCF(nn.Module):
@@ -187,14 +137,13 @@ class SWNMMCF(nn.Module):
         input_dim: int,
         kernel_count: int,
         target_dim: int,
-        spec: NetworkSpec,
         median: Tensor,
         scale: Tensor,
     ) -> None:
         super().__init__()
         self.normalizer = RobustNormalizer(median, scale)
-        self.encoder = WeightEncoder(input_dim, kernel_count, spec)
-        self.decoder = PhysicsDecoder(kernel_count, target_dim, spec)
+        self.encoder = WeightEncoder(input_dim, kernel_count)
+        self.decoder = PhysicsDecoder(kernel_count, target_dim)
 
     def forward(self, raw_feature: Tensor) -> dict[str, Tensor]:
         alpha = self.encoder(self.normalizer(raw_feature))
@@ -462,7 +411,6 @@ def run_training(args: argparse.Namespace) -> None:
     config = json.loads(args.config.read_text(encoding="utf-8"))
     training = config["training"]
     objective = config["objective"]
-    network_spec = NetworkSpec.from_mapping(config["network"])
     mmcf_spec = MmcfSpec.from_mapping(objective["mmcf"])
     loss_weights = LossWeights.from_mapping(objective["loss_weights"])
     kernel_scales = torch.tensor(objective["kernel_scales"], dtype=torch.float32)
@@ -489,7 +437,6 @@ def run_training(args: argparse.Namespace) -> None:
         input_dim=input_dim,
         kernel_count=int(kernel_scales.numel()),
         target_dim=target_dim,
-        spec=network_spec,
         median=median,
         scale=scale,
     ).to(device)
