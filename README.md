@@ -60,7 +60,7 @@ OpenVINS citation:
 
 Training samples are collected at visual measurement-update times. Raw stereo images and IMU measurements are first processed by the visual-inertial front end and the physical-information feature extractor. Each sample contains the multi-kernel scale vector, prior error state, visual innovation, measurement Jacobian, measurement-noise diagonal, prior covariance, valid measurement/state masks, and the physical target formed from the innovation and its Mahalanobis statistic.
 
-Variable-size MSCKF systems are padded to fixed measurement/state dimensions before feature concatenation. In the current OpenVINS integration, the packed network input is represented as a fixed-dimensional vector **s<sub>k</sub> ∈ ℝ<sup>d<sub>I</sub></sup>**, where the measurement- and state-related quantities are zero-padded to the predefined dimensions **m<sub>max</sub>** and **n<sub>max</sub>**, respectively, and accompanied by validity masks. The encoder outputs **N = 52** normalized robust kernel weights.
+Variable-size MSCKF systems are padded to fixed measurement/state dimensions before feature concatenation. In the current OpenVINS integration, the packed network input is represented as a fixed-dimensional vector **s<sub>k</sub>**, where the measurement- and state-related quantities are zero-padded to the predefined dimensions **m<sub>max</sub>** and **n<sub>max</sub>**, respectively, and accompanied by validity masks. The encoder outputs **N = 52** normalized robust kernel weights.
 
 The training `.npz` file uses:
 
